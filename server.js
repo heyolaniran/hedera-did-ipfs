@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const { Client, AccountId, PrivateKey, TopicId, TopicMessageSubmitTransaction, Hbar, AccountInfoQuery, AccountBalanceQuery, AccountCreateTransaction } = require('@hashgraph/sdk');
@@ -27,6 +28,14 @@ const { type } = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Enable CORS options 
+const corsOptions = {
+  origin: '*', // In production, replace with your frontend domain
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
