@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
   "dependencies": {
     "@hashgraph/sdk": "^2.73.2",
     "@transmute/vc.js": "^0.7.0-unstable.82",
@@ -6,6 +10,8 @@
     "express": "^5.1.0",
     "ipfs-http-client": "^59.0.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemon": "^3.1.10",
+    "pinata": "^2.5.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"

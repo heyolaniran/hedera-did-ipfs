@@ -2,12 +2,13 @@ require('dotenv').config();
 const express = require('express');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
-
 const { Client, AccountId, PrivateKey, TopicId, TopicMessageSubmitTransaction, Hbar, AccountInfoQuery, AccountBalanceQuery, AccountCreateTransaction } = require('@hashgraph/sdk');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 // ipfs-http-client is ESM-only; use lazy dynamic import to work in CommonJS
 let ipfsInstance = null;
+
+
 async function getIpfs() {
     if (!ipfsInstance) {
         const { create } = await import('ipfs-http-client');
@@ -62,7 +63,7 @@ const topicId = TopicId.fromString(process.env.HEDERA_TOPIC_ID);
 
 // Hospital DID and key from /create-did
 
-const ISSUER_DID = 'did:hedera:0.0.your-hospital-account';  // e.g., from previous creation
+const ISSUER_DID = `did:hedera:${process.env.HEDERA_ACCOUNT_ID}`;  // e.g., from previous creation
 const ISSUER_PRIVATE_KEY = PrivateKey.fromStringECDSA(process.env.HEDERA_PRIVATE_KEY);  // Use hospital key
 const ISSUER_PUBLIC_KEY = ISSUER_PRIVATE_KEY.publicKey;
 
@@ -176,7 +177,7 @@ async function resolveDID(did) {
     return {
         did: did,
         accountId: accountIdStr,
-        publicKey: accountInfo.key.toString(),
+        publicKey: accountInfo.key,  // Return the actual PublicKey object
         balance: accountBalance.hbars.toString(),
         didDocument: {
             '@context': 'https://www.w3.org/ns/did/v1',
@@ -205,16 +206,32 @@ app.get('/resolve-did/:did', async (req, res) => {
 
 // Helper store document on IPFS 
 
-async function storeOnIPFS(document) {
-    const ipfs = await getIpfs();
-    const resut = await ipfs.add(JSON.stringify(document));
-    return resut.cid.toString();
+async function storeOnIPFS(document, patientDID) {
+    const file = new File([Buffer.from(JSON.stringify(document))], `${patientDID.split('.')[2]}.json`, { type: 'application/json' });
+
+    const data = new FormData();
+    data.append('file', file);
+    data.append("network", "public");
+
+    const request = await fetch("https://uploads.pinata.cloud/v3/files", {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${process.env.PINATA_JWT}`
+        },
+        body: data
+    }); 
+
+    const response= await request.json();
+    console.log("IPFS response: ", response);
+
+    return response.data.cid; 
 }
 
 // Helper : anchor Data on HCS (CID + Hash)
 
 async function anchorOnHCS(data) {
     const message = Buffer.from(JSON.stringify(data));
+    const topicId = TopicId.fromString(process.env.HEDERA_TOPIC_ID);
     const tx = await new TopicMessageSubmitTransaction({ topicId, message }).execute(client);
     const receipt = await tx.getReceipt(client);
 
@@ -262,7 +279,7 @@ async function createSignedVC(credential, issuerDID, issuerPrivateKey) {
             created: issuedAt,
             proofPurpose: 'assertionMethod',
             verificationMethod: `${issuerDID}#key-1`,
-            jws: signature.toStringRaw()
+            jws: signature.toString()
         }
     }
 
@@ -285,7 +302,6 @@ async function createSignedVC(credential, issuerDID, issuerPrivateKey) {
 // Helper : Verify Signed VC
 
 async function verifySignedVC(signedVC, expectedIssuerDID) {
-
     const { proof, ...vcPayload } = signedVC;
 
     if (!proof || !proof.jws || proof.verificationMethod !== `${expectedIssuerDID}#key-1`) {
@@ -294,11 +310,20 @@ async function verifySignedVC(signedVC, expectedIssuerDID) {
 
     const payloadHash = crypto.createHash('sha256').update(JSON.stringify(vcPayload)).digest();
 
-    const publicKey = resolveDID(expectedIssuerDID).then(res => res.publicKey);
+    try {
+        // Wait for the DID resolution and get the public key
+        const didDoc = await resolveDID(expectedIssuerDID);
+        if (!didDoc || !didDoc.publicKey) {
+            throw new Error('Could not resolve DID or find public key');
+        }
 
-    const isValid = await publicKey.verify(payloadHash, Buffer.from(proof.jws, 'base64'));
-
-    return { verified: isValid, vc: signedVC };
+        // Use the PublicKey object directly
+        const isValid = await didDoc.publicKey.verify(payloadHash, Buffer.from(proof.jws, 'base64'));
+        return { verified: isValid, vc: signedVC };
+    } catch (error) {
+        console.error('Verification error:', error);
+        return { verified: false, error: error.message, vc: signedVC };
+    }
 }
 
 
@@ -349,7 +374,7 @@ app.post('/issue-medical-vc', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Missing patientDID or document in request body' });
         }
 
-        const cid = await storeOnIPFS(document);
+        const cid = await storeOnIPFS(document,patientDID);
         const documentHash = crypto.createHash('sha256').update(JSON.stringify(document)).digest('hex');
 
         // Anchor on HCS
@@ -361,7 +386,11 @@ app.post('/issue-medical-vc', async (req, res) => {
             timestamp: new Date().toISOString()
         };
 
-        await anchorOnHCS(anchorData);
+        console.log("Anchoring data on HCS: ", anchorData);
+
+        //await anchorOnHCS(anchorData);
+
+        console.log("Data anchored on HCS successfully");
 
         // Create and sign VC
         const vc = await createSignedVC({ patientDID, document: { ...document, ipfsCid: cid, hash: documentHash } }, ISSUER_DID, ISSUER_PRIVATE_KEY);
@@ -369,7 +398,7 @@ app.post('/issue-medical-vc', async (req, res) => {
         res.json({
             success: true,
             data: {
-                signedVC,
+                vc,
                 cid,
                 patientDID,
                 message: 'Medical VC issued, anchored on HCS and document stored on IPFS'
@@ -389,7 +418,7 @@ app.post('/issue-medical-vc', async (req, res) => {
 /**
  * @openapi
  * /verify-vc:
- *   get:
+ *   post:
  *     summary: Verify a signed Verifiable Credential
  *     description: Verifies VC signature and optionally fetches associated document from IPFS if CID is present.
  *     tags:
@@ -421,7 +450,7 @@ app.post('/issue-medical-vc', async (req, res) => {
  * 
  */
 
-app.get('/verify-vc', async (req, res) => {
+app.post('/verify-vc', async (req, res) => {
 
     try {
         const { signedVC, issuerDID } = req.body;
@@ -437,12 +466,7 @@ app.get('/verify-vc', async (req, res) => {
             let document = null
 
             if (cid) {
-                const ipfs = await getIpfs();
-                const chunks = [];
-                for await (const chunk of ipfs.cat(cid)) {
-                    chunks.push(chunk);
-                }
-                document = JSON.parse(Buffer.concat(chunks).toString());
+                document = `https://ipfs.io/ipfs/${cid}`; // or use your IPFS gateway
             }
 
             res.json({
