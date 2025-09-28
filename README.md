@@ -50,7 +50,7 @@ npm start
 
 The API will be available at `http://localhost:3000` (or your configured PORT).
 
-API documentation (Swagger UI) will be available at `http://localhost:3000/api-docs`.
+API documentation (Swagger UI) will be available at `http://localhost:3000/docs`.
 
 ## API Endpoints
 
